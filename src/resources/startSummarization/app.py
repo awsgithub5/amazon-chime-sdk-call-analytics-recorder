@@ -7,11 +7,30 @@ from datetime import datetime
 import requests
 import boto3
 from cohere_sagemaker import Client as CohereClient
+# import requests
+# import boto3
+# import json
 
 graphql_endpoint = os.environ.get('GRAPHQL_ENDPOINT')
 graphql_api_key = os.environ.get('GRAPHQL_API_KEY')
 
 update_call_mutation = '''
+
+
+useEffect(() => {
+  // Force reload of assets on page refresh
+  const clearCache = () => {
+    window.location.reload(true);  // Force reload from server
+  };
+  
+  // Add event listener for page refresh
+  window.addEventListener('beforeunload', clearCache);
+  
+  return () => {
+    window.removeEventListener('beforeunload', clearCache);
+  };
+}, []);
+
 mutation UpdateCall($input: UpdateCallInput!) {
     updateCall(input: $input) {
     callId
@@ -62,7 +81,7 @@ logger.setLevel(LOG_LEVEL)
 try:
     SUMMARY_QUESTION = os.environ['SUMMARY_QUESTION']
 except BaseException:
-    SUMMARY_QUESTION = "What is the customer calling about and what are the next steps?"
+    SUMMARY_QUESTION = "Call Notes : "
 ENDPOINT_NAME = os.environ['ENDPOINT_NAME']
 MODEL_PACKAGE_ARN = os.environ['MODEL_PACKAGE_ARN']
 MODEL_NAME = os.environ['MODEL_NAME']
@@ -247,9 +266,140 @@ Combine the summaries and answer this question: %s""" % question
     return full_summary, prompt
 
 
+# def run_call(transcript, question=SUMMARY_QUESTION):
+
+#     # break call into dialogue lines
+#     chunks = chunk_transcription(transcript)
+#     chunks = rename_speakers(chunks)
+
+#     logger.info('%s Chunks: %s', LOG_PREFIX, chunks)
+
+#     # combine all dictionaries in chunks into a single list
+#     combined_chunks = []
+#     for chunk in chunks:
+#         combined_chunks.append(chunk)
+
+#     logger.info('%s Combined Chunks: %s', LOG_PREFIX, combined_chunks)
+#     # break dialogue lines into partitions
+#     partitions = partition_call(chunks, 1000, 0.3)
+#     prompts = get_call_prompts(partitions, question)
+
+#     logger.info('%s Prompt for Partition 1: %s ', LOG_PREFIX, prompts[0])
+#     # Partition Summary
+#     summaries = get_responses(prompts)
+
+#     # Combined Summary
+#     summary, summary_prompt = summarize_summaries(summaries)
+
+#     logger.info('%s Full Summary: %s', LOG_PREFIX, summary)
+#     logger.info('%s Transcription: %s', LOG_PREFIX, combined_chunks)
+
+#     summary_dict = {
+#         'transcription': combined_chunks,
+#         'list_prompt': prompts,
+#         'summary_prompt': summary_prompt,
+#         'final_summary': summary,
+#         'question': question,
+#         'model_name': MODEL_NAME,
+#         'model_arn': MODEL_PACKAGE_ARN,
+#     }
+
+#     return summary_dict
+
+
+SYSTEM_PROPMT_SUMMARY = """
+You are an expert call analyzer for insurance customer service interactions. Your task is to quickly analyze customer service call transcripts and generate concise, actionable summaries focusing on key elements that matter to supervisors and follow-up agents.
+
+Output Format:
+```
+CALL OVERVIEW
+Agent: [Name] (ID: [Number])
+Customer: [Name]
+Date/Time: [When call occurred]
+Duration: [Length of call]
+Call Intent: [Type of interaction in one of these categories : Coverage Inquiries, Documentation Requests, Claims, Policy Management, Billing & Payments, Account Maintenance ]
+
+SENTIMENT & INTERACTION
+Customer Mood: [Initial → Final] (Scale: Distressed, Upset, Neutral, Satisfied, Pleased)
+Agent Performance: [Rating 1-5]
+- Key Strengths: [Bullet points]
+- Areas for Improvement: [If any]
+
+KEY POINTS (Max 5)
+• [Most important points from conversation]
+
+CRITICAL FOLLOW-UPS
+Urgent (24h):
+- [Action items] [Owner]
+Standard:
+- [Action items] [Owner]
+
+ADDITIONAL NOTES
+• [Any other critical information]
+```
+
+Guidelines:
+1. Focus on what another agent/manager NEEDS to know, not everything that was said
+2. Highlight any promises or commitments made to customer
+3. Note any escalations or special handling required
+4. Flag any compliance risks or policy exceptions
+5. Include specific timestamps only for critical moments
+6. Note customer's emotional state if relevant to follow-up
+7. Identify any missing documentation or incomplete verification
+8. Rate agent's performance based on:
+   - Policy/procedure adherence
+   - Problem resolution effectiveness
+   - Customer service quality
+   - Documentation completeness
+
+Important:
+- Keep each section brief but informative
+- Use clear action items with owners
+- Flag high-priority items
+- Note any pending customer expectations
+- Include relevant reference numbers (claims, policies, etc.)
+- Highlight any unusual circumstances or exceptions
+- Note any system issues or technical problems encountered
+
+Skip any sections that aren't relevant to the specific call, but maintain the format for consistency.
+
+"""
+MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+
+############################# Amita's Creds ###################################
+bedrock_runtime = boto3.client(service_name='bedrock-runtime',
+                                region_name='us-east-1',
+                                aws_access_key_id= os.environ.get(aws_access_key_id),
+                                aws_secret_access_key= os.environ.get(aws_secret_access_key))
+############################# Amita's Creds ###################################
+
+
+def geenrate_response_with_claude_summary(user_query):
+
+    messages = [{"role": "user", "content": user_query}]
+
+    modelId = MODEL_ID
+    body = json.dumps({
+                "messages": messages,
+                "system": SYSTEM_PROPMT_SUMMARY,
+                "max_tokens": 2000,
+                "temperature": 0.0,
+                #"top_p": 1,
+                "anthropic_version": "bedrock-2023-05-31"
+    })
+
+    response = bedrock_runtime.invoke_model(body=body, modelId=modelId, accept="application/json", contentType="application/json")
+
+    response_body = json.loads(response.get('body').read())
+    result = response_body.get('content', '')[0]["text"]
+    #print(result)
+    return result
+
+
+
 def run_call(transcript, question=SUMMARY_QUESTION):
 
-    # break call into dialogue lines
+    # # break call into dialogue lines
     chunks = chunk_transcription(transcript)
     chunks = rename_speakers(chunks)
 
@@ -267,18 +417,40 @@ def run_call(transcript, question=SUMMARY_QUESTION):
 
     logger.info('%s Prompt for Partition 1: %s ', LOG_PREFIX, prompts[0])
     # Partition Summary
-    summaries = get_responses(prompts)
+    # summaries = get_responses(prompts)
 
-    # Combined Summary
-    summary, summary_prompt = summarize_summaries(summaries)
+    # # Combined Summary
+    # summary, summary_prompt = summarize_summaries(summaries)
+    user_query = """
+    TRNASCRIPT--
+    """ + transcript
+    if SUMMARY_QUESTION == "Call Notes : ":
+        user_query = """ TRNASCRIPT-- """ + transcript
+    else : 
+        user_query = transcript + SUMMARY_QUESTION
+        
+    summary = geenrate_response_with_claude_summary(user_query = user_query)
+    print("Claude model SUMMARY PART...")
+    summary_prompt  = SYSTEM_PROPMT_SUMMARY
 
     logger.info('%s Full Summary: %s', LOG_PREFIX, summary)
     logger.info('%s Transcription: %s', LOG_PREFIX, combined_chunks)
+        
 
+    # summary_dict = {
+    #     'transcription': combined_chunks,
+    #     'list_prompt': prompts,
+    #     'summary_prompt': summary_prompt,
+    #     'final_summary': summary,
+    #     'question': question,
+    #     'model_name': MODEL_NAME,
+    #     'model_arn': MODEL_PACKAGE_ARN,
+    # }
+    
     summary_dict = {
         'transcription': combined_chunks,
         'list_prompt': prompts,
-        'summary_prompt': summary_prompt,
+        'summary_prompt': summary,
         'final_summary': summary,
         'question': question,
         'model_name': MODEL_NAME,
@@ -286,6 +458,7 @@ def run_call(transcript, question=SUMMARY_QUESTION):
     }
 
     return summary_dict
+
 
 
 def prepare_summary(summary_dict, call_metadata=None):
@@ -502,3 +675,5 @@ def handler(event, context):
             'statusCode': 400,
             'body': 'Unsupported event type'
         }
+        
+        
