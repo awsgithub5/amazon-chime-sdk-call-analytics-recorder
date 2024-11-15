@@ -42,7 +42,7 @@ export class CognitoResources extends Construct {
       bundling: {
         externalModules: ['aws-sdk'],
       },
-      runtime: Runtime.NODEJS_14_X,
+      runtime: Runtime.NODEJS_18_X,
       architecture: Architecture.ARM_64,
       timeout: Duration.seconds(60),
       environment: {
